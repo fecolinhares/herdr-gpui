@@ -195,17 +195,24 @@ mod linux {
     /// `XDG_RUNTIME_DIR` when the name is relative, must accept a connection.
     /// A crashed compositor can leave its socket on disk, so the file existing
     /// is not enough: connecting proves that something still answers.
+    ///
+    /// The attempt never blocks. A compositor that is busy (its accept queue is
+    /// full) still exists, so it keeps the Wayland helper; only a socket that
+    /// refuses the connection falls back to X11, which is why this runs before
+    /// the paste deadline rather than inside it.
     fn wayland_socket(
         display: Option<&std::ffi::OsStr>,
         runtime: Option<&std::ffi::OsStr>,
     ) -> bool {
-        use std::os::unix::net::UnixStream;
+        use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, connect, socket};
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        use std::os::fd::AsRawFd;
 
         let Some(display) = display else {
             return false;
         };
         let display = std::path::Path::new(display);
-        let socket = if display.is_absolute() {
+        let socket_path = if display.is_absolute() {
             display.to_path_buf()
         } else {
             let Some(runtime) = runtime else {
@@ -213,7 +220,34 @@ mod linux {
             };
             std::path::Path::new(runtime).join(display)
         };
-        UnixStream::connect(socket).is_ok()
+        let Ok(address) = UnixAddr::new(&socket_path) else {
+            return false;
+        };
+        let flags = SockFlag::SOCK_NONBLOCK | SockFlag::SOCK_CLOEXEC;
+        let Ok(socket) = socket(AddressFamily::Unix, SockType::Stream, flags, None) else {
+            return false;
+        };
+        match connect(socket.as_raw_fd(), &address) {
+            Ok(()) => true,
+            // A full accept queue means a compositor is there but busy.
+            Err(nix::errno::Errno::EAGAIN) => true,
+            Err(nix::errno::Errno::EINPROGRESS) => {
+                let mut fds = [PollFd::new(&socket, PollFlags::OUT)];
+                let timeout = Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 50_000_000,
+                };
+                match poll(&mut fds, Some(&timeout)) {
+                    // Still pending after the budget: assume a busy compositor
+                    // rather than reading XWayland behind a live Wayland session.
+                    Ok(0) | Err(_) => true,
+                    Ok(_) => !fds[0]
+                        .revents()
+                        .intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL),
+                }
+            }
+            Err(_) => false,
+        }
     }
 
     fn read_commands(

@@ -94,13 +94,17 @@ fn wayland_session_requires_the_compositor_socket() -> Result<()> {
             "an absolute socket path needs no XDG_RUNTIME_DIR"
         );
         drop(listener);
-        // The kernel closes a listening socket asynchronously: a connect can
-        // still succeed for a moment after the last descriptor is dropped.
-        thread::sleep(Duration::from_millis(50));
-        assert!(
-            !wayland_socket(Some(socket.as_os_str()), None),
-            "a socket left behind by a crashed compositor is not a session"
-        );
+        // The kernel releases a listening socket asynchronously, so the stale
+        // socket can still answer for a few milliseconds. Wait for it to start
+        // refusing instead of assuming a fixed delay is enough.
+        let settled = Instant::now() + Duration::from_millis(500);
+        while wayland_socket(Some(socket.as_os_str()), None) {
+            assert!(
+                Instant::now() < settled,
+                "a socket left behind by a crashed compositor kept answering"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
         let regular = dir.path().join("regular");
         std::fs::write(&regular, b"").map_err(Error::Process)?;
         assert!(

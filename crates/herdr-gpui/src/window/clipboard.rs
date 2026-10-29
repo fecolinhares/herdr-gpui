@@ -192,12 +192,14 @@ mod linux {
     }
 
     /// The compositor socket named by `WAYLAND_DISPLAY`, resolved against
-    /// `XDG_RUNTIME_DIR` when the name is relative, must exist and be a socket.
+    /// `XDG_RUNTIME_DIR` when the name is relative, must accept a connection.
+    /// A crashed compositor can leave its socket on disk, so the file existing
+    /// is not enough: connecting proves that something still answers.
     fn wayland_socket(
         display: Option<&std::ffi::OsStr>,
         runtime: Option<&std::ffi::OsStr>,
     ) -> bool {
-        use std::os::unix::fs::FileTypeExt;
+        use std::os::unix::net::UnixStream;
 
         let Some(display) = display else {
             return false;
@@ -211,7 +213,7 @@ mod linux {
             };
             std::path::Path::new(runtime).join(display)
         };
-        std::fs::metadata(socket).is_ok_and(|metadata| metadata.file_type().is_socket())
+        UnixStream::connect(socket).is_ok()
     }
 
     fn read_commands(

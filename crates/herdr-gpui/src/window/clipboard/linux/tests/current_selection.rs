@@ -71,26 +71,37 @@ fn wayland_session_requires_the_compositor_socket() -> Result<()> {
     } else {
         std::env::temp_dir()
     };
-    let dir = root.join(format!("herdr-clipboard-socket-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(Error::Process)?;
-    let result = (|| {
+    // A private, exclusively created directory: a predictable name in shared
+    // /tmp could be pre-created by another local user and redirect the writes.
+    let dir = tempfile::Builder::new()
+        .prefix("herdr-clipboard-")
+        .tempdir_in(&root)
+        .map_err(Error::Process)?;
+    (|| {
         let name = OsStr::new("wayland-9");
         assert!(
-            !wayland_socket(Some(name), Some(dir.as_os_str())),
+            !wayland_socket(Some(name), Some(dir.path().as_os_str())),
             "a name without a socket is not a session"
         );
-        let socket = dir.join(name);
+        let socket = dir.path().join(name);
         let listener = UnixListener::bind(&socket).map_err(Error::Process)?;
         assert!(
-            wayland_socket(Some(name), Some(dir.as_os_str())),
+            wayland_socket(Some(name), Some(dir.path().as_os_str())),
             "a live compositor socket is a session"
         );
         assert!(
             wayland_socket(Some(socket.as_os_str()), None),
             "an absolute socket path needs no XDG_RUNTIME_DIR"
         );
-        let regular = dir.join("regular");
+        drop(listener);
+        // The kernel closes a listening socket asynchronously: a connect can
+        // still succeed for a moment after the last descriptor is dropped.
+        thread::sleep(Duration::from_millis(50));
+        assert!(
+            !wayland_socket(Some(socket.as_os_str()), None),
+            "a socket left behind by a crashed compositor is not a session"
+        );
+        let regular = dir.path().join("regular");
         std::fs::write(&regular, b"").map_err(Error::Process)?;
         assert!(
             !wayland_socket(Some(regular.as_os_str()), None),
@@ -101,12 +112,9 @@ fn wayland_session_requires_the_compositor_socket() -> Result<()> {
             "a relative name without XDG_RUNTIME_DIR cannot resolve"
         );
         assert!(
-            !wayland_socket(None, Some(dir.as_os_str())),
+            !wayland_socket(None, Some(dir.path().as_os_str())),
             "no WAYLAND_DISPLAY is an X11 session"
         );
-        drop(listener);
         Ok(())
-    })();
-    std::fs::remove_dir_all(&dir).map_err(Error::Process)?;
-    result
+    })()
 }

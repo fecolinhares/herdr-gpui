@@ -165,7 +165,7 @@ mod linux {
     pub(super) fn read(image_only: bool) -> Result<Option<ClipboardItem>> {
         read_commands(
             image_only,
-            std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            wayland_session(),
             std::env::var_os("DISPLAY").is_some(),
             |program, args, limit, deadline| {
                 output(
@@ -175,6 +175,43 @@ mod linux {
                 )
             },
         )
+    }
+
+    /// Whether a Wayland compositor can actually answer, decided by its socket
+    /// rather than by the variable alone. A session started from a display
+    /// manager can inherit `WAYLAND_DISPLAY` while running through X11; the
+    /// variable then names a socket nothing listens on, `wl-paste` fails, and
+    /// the X11 selection is never read because XWayland must not be a fallback
+    /// for a live Wayland session.
+    #[cfg(target_os = "linux")]
+    fn wayland_session() -> bool {
+        wayland_socket(
+            std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        )
+    }
+
+    /// The compositor socket named by `WAYLAND_DISPLAY`, resolved against
+    /// `XDG_RUNTIME_DIR` when the name is relative, must exist and be a socket.
+    fn wayland_socket(
+        display: Option<&std::ffi::OsStr>,
+        runtime: Option<&std::ffi::OsStr>,
+    ) -> bool {
+        use std::os::unix::fs::FileTypeExt;
+
+        let Some(display) = display else {
+            return false;
+        };
+        let display = std::path::Path::new(display);
+        let socket = if display.is_absolute() {
+            display.to_path_buf()
+        } else {
+            let Some(runtime) = runtime else {
+                return false;
+            };
+            std::path::Path::new(runtime).join(display)
+        };
+        std::fs::metadata(socket).is_ok_and(|metadata| metadata.file_type().is_socket())
     }
 
     fn read_commands(

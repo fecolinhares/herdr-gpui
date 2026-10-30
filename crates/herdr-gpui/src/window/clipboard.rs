@@ -200,6 +200,7 @@ mod linux {
     /// full) still exists, so it keeps the Wayland helper; only a socket that
     /// refuses the connection falls back to X11, which is why this runs before
     /// the paste deadline rather than inside it.
+    #[cfg(target_os = "linux")]
     fn wayland_socket(
         display: Option<&std::ffi::OsStr>,
         runtime: Option<&std::ffi::OsStr>,

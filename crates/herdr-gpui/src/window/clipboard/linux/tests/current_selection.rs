@@ -60,7 +60,9 @@ fn helper_errors_do_not_fall_back_to_another_selection_or_format() {
 
 /// An X11 session can inherit `WAYLAND_DISPLAY` from the display manager. The
 /// variable alone then names a compositor that is not running, so the session
-/// must be decided by the socket itself.
+/// must be decided by the socket itself. Wayland is Linux-only, so this runs
+/// only there.
+#[cfg(target_os = "linux")]
 #[test]
 fn wayland_session_requires_the_compositor_socket() -> Result<()> {
     use std::{ffi::OsStr, os::unix::net::UnixListener, path::PathBuf};
